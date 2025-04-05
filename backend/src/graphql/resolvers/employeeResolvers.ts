@@ -1,17 +1,15 @@
 import sql from 'mssql';
-import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import nodemailer from 'nodemailer';
-import axios from 'axios';
 
 const fetchEmployees = async (pool: sql.ConnectionPool) => {
   try {
     const result = await pool.request().query(`
-      SELECT idEmployee, nom_employee, email_employee, role, idEquipe, disabledUntil
+      SELECT idEmployee, nom_employee, email_employee, role, idEquipe, disabledUntil, password_employee
       FROM Employee
     `);
 
-    return result.recordset; // Return the employees directly
+    return result.recordset;
   } catch (error) {
     console.error('Error fetching employees:', error);
     throw new Error('Failed to fetch employees');
@@ -23,7 +21,18 @@ export const employeeResolvers = {
     employees: async (_: any, __: any, { pool }: { pool: sql.ConnectionPool }) => {
       try {
         const employees = await fetchEmployees(pool);
-        return { employees };
+        return {
+          message: "Employees fetched successfully",
+          employees: employees.map((emp) => ({
+            idEmployee: emp.idEmployee,
+            nomEmployee: emp.nom_employee,
+            emailEmployee: emp.email_employee,
+            passwordEmployee: emp.password_employee,
+            idEquipe: emp.idEquipe,
+            role: emp.role,
+            disabledUntil: emp.disabledUntil,
+          }))
+        };
       } catch (error) {
         console.error('Error fetching employees:', error);
         throw new Error('Failed to fetch employees');
@@ -35,20 +44,19 @@ export const employeeResolvers = {
         const result = await pool.request()
           .input('id', sql.UniqueIdentifier, id)
           .query(`
-            SELECT idEmployee, nom_employee, email_employee, idEquipe, role, disabledUntil
+            SELECT idEmployee, nom_employee, email_employee, idEquipe, role, disabledUntil, password_employee
             FROM Employee
             WHERE idEmployee = @id;
           `);
 
-        if (result.recordset.length === 0) {
-          throw new Error("Employee not found");
-        }
+        if (result.recordset.length === 0) throw new Error("Employee not found");
 
         const employee = result.recordset[0];
         return {
           idEmployee: employee.idEmployee,
           nomEmployee: employee.nom_employee,
           emailEmployee: employee.email_employee,
+          passwordEmployee: employee.password_employee,
           idEquipe: employee.idEquipe,
           role: employee.role,
           disabledUntil: employee.disabledUntil
@@ -61,12 +69,12 @@ export const employeeResolvers = {
 
     searchEmployees: async (
       _: any,
-      { filters }: { filters?: { nomEmployee?: string; emailEmployee?: string } },
+      { filters }: { filters?: { nomEmployee?: string; emailEmployee?: string; passwordEmployee?: string } },
       { pool }: { pool: sql.ConnectionPool }
     ) => {
       try {
         let query = `
-          SELECT idEmployee, nom_employee, email_employee, idEquipe, role, disabledUntil
+          SELECT idEmployee, nom_employee, email_employee, idEquipe, role, disabledUntil, password_employee
           FROM Employee
         `;
         const conditions: string[] = [];
@@ -80,6 +88,11 @@ export const employeeResolvers = {
         if (filters?.emailEmployee) {
           conditions.push("email_employee LIKE @emailEmployee");
           inputs.push({ name: "emailEmployee", type: sql.VarChar, value: `%${filters.emailEmployee}%` });
+        }
+
+        if ((filters as any)?.passwordEmployee) {
+          conditions.push("password_employee = @passwordEmployee");
+          inputs.push({ name: "passwordEmployee", type: sql.VarChar, value: (filters as any).passwordEmployee });
         }
 
         if (conditions.length > 0) {
@@ -96,6 +109,7 @@ export const employeeResolvers = {
             idEmployee: employee.idEmployee,
             nomEmployee: employee.nom_employee,
             emailEmployee: employee.email_employee,
+            passwordEmployee: employee.password_employee,
             idEquipe: employee.idEquipe,
             role: employee.role,
             disabledUntil: employee.disabledUntil
@@ -122,16 +136,13 @@ export const employeeResolvers = {
       { pool }: { pool: sql.ConnectionPool }
     ) => {
       try {
-        const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(passwordEmployee, saltRounds);
-
         const idEmployee = uuidv4();
 
         await pool.request()
           .input('id', sql.UniqueIdentifier, idEmployee)
           .input('nom', sql.VarChar, nomEmployee)
           .input('email', sql.VarChar, emailEmployee)
-          .input('password', sql.VarChar, hashedPassword)
+          .input('password', sql.VarChar, passwordEmployee)
           .input('equipe', sql.UniqueIdentifier, idEquipe || null)
           .input('role', sql.VarChar, role)
           .input('disabledUntil', sql.DateTime, disabledUntil ? new Date(disabledUntil) : null)
@@ -144,6 +155,7 @@ export const employeeResolvers = {
           idEmployee,
           nomEmployee,
           emailEmployee,
+          passwordEmployee,
           idEquipe,
           role,
           disabledUntil: disabledUntil ? new Date(disabledUntil).toISOString() : null
@@ -156,15 +168,22 @@ export const employeeResolvers = {
 
     updateEmployee: async (
       _: any,
-      { id, nomEmployee, emailEmployee, role, idEquipe, disabledUntil }: { id: string; nomEmployee?: string; emailEmployee?: string; role?: string; idEquipe?: string; disabledUntil?: string },
+      { id, nomEmployee, emailEmployee, passwordEmployee, role, idEquipe, disabledUntil }: {
+        id: string;
+        nomEmployee?: string;
+        emailEmployee?: string;
+        passwordEmployee?: string;
+        role?: string;
+        idEquipe?: string;
+        disabledUntil?: string;
+      },
       { pool }: { pool: sql.ConnectionPool }
     ) => {
       try {
-        // Fetch the current employee data
         const currentEmployeeResult = await pool.request()
           .input('id', sql.UniqueIdentifier, id)
           .query(`
-            SELECT nom_employee, email_employee, role, idEquipe, disabledUntil
+            SELECT nom_employee, email_employee, password_employee, role, idEquipe, disabledUntil
             FROM Employee
             WHERE idEmployee = @id;
           `);
@@ -175,14 +194,13 @@ export const employeeResolvers = {
 
         const currentEmployee = currentEmployeeResult.recordset[0];
 
-        // Use existing values for fields that are not provided in the mutation
         const updatedNomEmployee = nomEmployee ?? currentEmployee.nom_employee;
         const updatedEmailEmployee = emailEmployee ?? currentEmployee.email_employee;
         const updatedRole = role ?? currentEmployee.role;
         const updatedIdEquipe = idEquipe ?? currentEmployee.idEquipe;
         const updatedDisabledUntil = disabledUntil !== undefined ? new Date(disabledUntil) : currentEmployee.disabledUntil;
+        const updatedPassword = passwordEmployee ?? currentEmployee.password_employee;
 
-        // Perform the update
         await pool.request()
           .input('id', sql.UniqueIdentifier, id)
           .input('nomEmployee', sql.VarChar, updatedNomEmployee)
@@ -190,21 +208,23 @@ export const employeeResolvers = {
           .input('role', sql.VarChar, updatedRole)
           .input('idEquipe', sql.UniqueIdentifier, updatedIdEquipe)
           .input('disabledUntil', sql.DateTime, updatedDisabledUntil)
+          .input('passwordEmployee', sql.VarChar, updatedPassword)
           .query(`
             UPDATE Employee
             SET nom_employee = @nomEmployee,
                 email_employee = @emailEmployee,
+                password_employee = @passwordEmployee,
                 role = @role,
                 idEquipe = @idEquipe,
                 disabledUntil = @disabledUntil
             WHERE idEmployee = @id;
           `);
 
-        // Return the updated employee
         return {
           idEmployee: id,
           nomEmployee: updatedNomEmployee,
           emailEmployee: updatedEmailEmployee,
+          passwordEmployee: updatedPassword,
           role: updatedRole,
           idEquipe: updatedIdEquipe,
           disabledUntil: updatedDisabledUntil,
@@ -215,16 +235,11 @@ export const employeeResolvers = {
       }
     },
 
-    deleteEmployee: async (
-      _: any,
-      { id }: { id: string },
-      { pool }: { pool: sql.ConnectionPool }
-    ) => {
+    deleteEmployee: async (_: any, { id }: { id: string }, { pool }: { pool: sql.ConnectionPool }) => {
       try {
         await pool.request()
           .input('id', sql.UniqueIdentifier, id)
           .query(`DELETE FROM Employee WHERE idEmployee = @id`);
-
         return { success: true, message: "Employee deleted successfully" };
       } catch (error) {
         console.error("Error deleting employee:", error);
@@ -238,45 +253,48 @@ export const employeeResolvers = {
       { pool }: { pool: sql.ConnectionPool }
     ) => {
       try {
-        // Fetch the employee's email from the database
         const result = await pool.request()
           .input('id', sql.UniqueIdentifier, id)
-          .query(`
-            SELECT email_employee
-            FROM Employee
-            WHERE idEmployee = @id
-          `);
-
+          .query(`SELECT email_employee, password_employee FROM Employee WHERE idEmployee = @id`);
+    
         if (result.recordset.length === 0) {
           throw new Error('Employee not found');
         }
-
+    
         const employeeEmail = result.recordset[0].email_employee;
-        console.log(`Employee email: ${employeeEmail}`); // Debugging log
-
-        // Configure the email transporter
+        const employeePassword = result.recordset[0].password_employee;
+    
         const transporter = nodemailer.createTransport({
-          service: 'gmail', // Use your email service provider
+          service: 'gmail',
           auth: {
-            user: 'onssbenamara3@gmail.com', // Replace with your email
-            pass: 'gnxj idgf trax kliq', // Replace with your email password or app-specific password
+            user: 'onssbenamara3@gmail.com',
+            pass: 'gnxj idgf trax kliq',
           },
         });
-
-        // Send the email
+    
         const info = await transporter.sendMail({
-          from: 'onssbenamara3@gmail.com', // Replace with your email
+          from: 'onssbenamara3@gmail.com',
           to: employeeEmail,
           subject,
-          text: message,
+          html: `
+            <div style="font-family: Arial, sans-serif;">
+              <p>${message}</p>
+              <p><strong>Email:</strong> ${employeeEmail}</p>
+              <p><strong>Password:</strong> ${employeePassword}</p>
+              <a href="http://localhost:5173/login"
+                style="display: inline-block; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; margin-top: 15px;">
+                Go to Login
+              </a>
+            </div>
+          `,
         });
-
-        console.log(`Email sent: ${info.response}`); // Debugging log
+    
+        console.log(`Email sent: ${info.response}`);
         return true;
       } catch (error) {
         console.error('Error sending email:', error);
         throw new Error('Failed to send email');
       }
-    },
-  },
+    }    
+  }
 };

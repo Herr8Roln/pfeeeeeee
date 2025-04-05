@@ -3,12 +3,12 @@ import sql, { ConnectionPool } from 'mssql';
 // SQL Server configuration
 const config = {
   user: 'sa',
-  password: 'Ons17082001',
-
+  password: 'YourPassword123!',
   server: 'localhost',
-  database: 'time_tracking',
+  database: 'time_tracking1',
+  
   options: {
-    encrypt: true, // Use encryption if required
+    encrypt: false, // Use encryption if required
     trustServerCertificate: true, // Change to true for local development
   },
 };
@@ -27,4 +27,3 @@ export const connectToDatabase = async (): Promise<void> => {
 
 // Export the pool connection to be used in resolvers
 export const getPool = (): ConnectionPool => pool;
-
